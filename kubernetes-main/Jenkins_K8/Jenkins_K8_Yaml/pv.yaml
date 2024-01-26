@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: jenkins-pv-volume
+  namespace: jenkins
+  labels:
+    app: jenkins
+spec:
+  capacity:
+    storage: 12Gi
+  accessModes:
+    - ReadWriteMany
+  hostPath:
+    path: "/home/arslaanmalik/jenkins-workspace/"
