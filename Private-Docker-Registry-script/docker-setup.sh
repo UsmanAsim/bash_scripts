@@ -1,17 +1,51 @@
 #!/bin/bash
-sudo yum install -y yum-utils 
-sudo yum-config-manager --add-repo   https://download.docker.com/linux/centos/docker-ce.repo 
-sudo yum -y install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-sudo systemctl start docker
-sudo systemctl enable docker
-sudo systemctl status docker
-sudo usermod -aG docker centos 
-sudo systemctl restart docker 
-echo "Wait for 5 Sec"
-sleep 5
-sudo chmod 666 /var/run/docker.sock 
-sudo systemctl restart docker 
-sudo curl -L "https://github.com/docker/compose/releases/download/v2.12.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-sudo mv /usr/local/bin/docker-compose /usr/bin/docker-compose
-sudo chmod +x /usr/bin/docker-compose
 
+# Exit script on error
+set -e
+
+# Install required tools
+echo "Installing yum-utils..."
+sudo yum install -y yum-utils
+
+# Add Docker repository
+echo "Adding Docker repository..."
+sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
+
+# Install Docker packages
+echo "Installing Docker..."
+sudo yum install -y docker-ce docker-ce-cli containerd.io
+
+# Enable and start Docker service
+echo "Enabling and starting Docker service..."
+sudo systemctl enable docker
+sudo systemctl start docker
+
+# Add the current user to the Docker group
+echo "Adding user $USER to the Docker group..."
+sudo usermod -aG docker $USER
+
+# Ensure Docker is enabled
+echo "Ensuring Docker service is enabled..."
+sudo systemctl enable docker
+
+# Install Docker Compose
+echo "Installing Docker Compose..."
+sudo curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+
+# Make Docker Compose executable
+echo "Setting execute permissions for Docker Compose..."
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Update PATH
+echo "Verifying PATH..."
+echo $PATH
+
+# Create a symbolic link for Docker Compose
+echo "Creating a symbolic link for Docker Compose..."
+sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
+
+# Verify Docker Compose installation
+echo "Checking Docker Compose version..."
+docker-compose --version
+
+echo "Docker and Docker Compose installation completed successfully!"
