@@ -1,11 +1,11 @@
-Just go to
+#Just go to
 cd /etc/yum.repos.d
 
 update appstream, baseous and extras with below line and comment existing
 
 baseurl=http://vault.centos.org/8.5.2111/BaseOS/x86_64/os/
 
-Install Docker and Docker compose
+#Install Docker and Docker compose
 sudo yum install -y yum-utils
 sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
 sudo yum install -y docker-ce docker-ce-cli containerd.io
@@ -19,7 +19,7 @@ echo $PATH
 sudo ln -s /usr/local/bin/docker-compose /usr/bin/docker-compose
 docker-compose –version
 
-Registry Installation
+#Registry Installation
 cd  /etc/hosts
 {ip_ of VM} registry name
 Open Ports inbound 5000 + 443 for registry login and access
@@ -27,15 +27,16 @@ Run the registry_script
 Docker login usman-registry.com
 User/pass
 
+#Viewing the docker images on browser and cmd
 
-
+https://$(docker-machine ip default)/v2/_catalog
 cat ~/.docker/config.json
 curl -k -X GET https://usman-registry.com/v2/_catalog -H "Authorization: Basic YWRtaW46YWRtaW4="
 
 curl -k -X GET https://usman-registry.com/v2/nginx/tags/list -H "Authorization: Basic YWRtaW46YWRtaW4="
 
 
-Please make sure every machine where you want to pull/push or login the internal registry the below mentioned need to be placed there
+#Please make sure every machine where you want to pull/push or login the internal registry the below mentioned need to be placed there
 cd  /etc/hosts
 the hosts has an entry of the machine with the name and registry.
  
