@@ -637,7 +637,7 @@ Please Note:
 To join remaining control plan you need to scp all pki keys from control plane 1 (master1) to the masternode N. and then execute the Join command. 
 The above is only for the control plane only. not for worker node.
 
-
+https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/high-availability/
 
 
 
