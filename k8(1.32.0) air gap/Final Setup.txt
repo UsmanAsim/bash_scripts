@@ -1,0 +1,645 @@
+Pre-Req:
+
+##########################
+Port to open for traffic
+##########################
+6443 Kubernetes API server
+2379-2380	etcd server client API
+10250	Kubelet API
+10259	kube-scheduler
+10257	kube-controller-manager	
+10250	Kubelet API
+10256	kube-proxy
+30000-32767	NodePort Services
+
+sudo firewall-cmd --permanent --add-port=2379/tcp
+sudo firewall-cmd --permanent --add-port=2380/tcp
+sudo firewall-cmd --permanent --add-port=6443/tcp
+sudo firewall-cmd --permanent --add-port=10248/tcp
+sudo firewall-cmd --permanent --add-port=10250/tcp
+
+sudo firewall-cmd --permanent --add-port=10257/tcp
+sudo firewall-cmd --permanent --add-port=10259/tcp
+sudo firewall-cmd --reload
+
+sudo firewall-cmd --list-ports
+
+sudo systemctl start firewalld
+sudo systemctl enable firewalld
+
+sudo systemctl stop firewalld
+sudo systemctl disable firewalld
+sudo systemctl status firewalld
+
+
+# To comprehensively review all open ports and their details:
+sudo ss -tunap
+sudo lsof -i -P -n | grep LISTEN
+sudo firewall-cmd --list-ports
+
+##########################
+etc host enteries
+##########################
+
+Please ensure all host will be available to all the nodes present in the cluster including 
+Load Balancer + Virtual ip
+Control plane
+worker nodes
+external etcd
+
+
+sudo hostnamectl set-hostname etcd1
+sudo hostnamectl set-hostname etcd2
+sudo hostnamectl set-hostname etcd3
+Above will be applied to all nodes in the cluster
+
+##########################
+Disabling Se-linux & swap
+##########################
+
+lsmod | grep br_netfilter
+
+echo 1 > /proc/sys/net/bridge/bridge-nf-call-iptables
+echo 1 > /proc/sys/net/bridge/bridge-nf-call-ip6tables
+
+
+vi /etc/sysctl.conf
+net.bridge.bridge-nf-call-iptables = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+
+sysctl -p
+
+sudo systemctl disable --now firewalld
+
+if ! setenforce 0; then   sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config; fi
+swapoff -a
+
+
+## disabling firewall and cgroup
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+sudo tee /etc/modules-load.d/k8s.conf <<EOF
+overlay
+br_netfilter
+EOF
+
+sudo setenforce 0
+
+to apply this change permentely
+sudo vi /etc/selinux/config
+SELINUX=disabled
+
+############################################
+Setting Up Load Balancer Nodes
+############################################
+
+# Please Note the below setting will be applied to both load balancer Nodes
+
+************
+HAProxy
+************
+
+cd /haproxy
+
+sudo yum localinstall *.rpm -y --disablerepo="*"
+
+
+#Edit the HAProxy configuration file located at /etc/haproxy/haproxy.cfg and update the control plane/master Ip with the actual
+
+vi /etc/haproxy/haproxy.cfg
+
+defaults
+    mode                    tcp
+    option                  tcplog
+    timeout http-request    10s
+    timeout queue           1m
+    timeout connect         10s
+    timeout client          1m
+    timeout server          1m
+    timeout http-keep-alive 10s
+    timeout check           10s
+
+
+frontend kubernetes-frontend
+  bind *:6443
+  mode tcp
+  option tcplog
+  default_backend kubernetes-backend
+
+backend kubernetes-backend
+  option httpchk GET /healthz
+  http-check expect status 200
+  mode tcp
+  option ssl-hello-chk
+  balance roundrobin
+  server k8-master1 192.168.1.16:6443 check fall 3 rise 2
+  server k8-master2 192.168.1.15:6443 check fall 3 rise 2
+  server k8-master3 192.168.1.14:6443 check fall 3 rise 2
+
+sudo systemctl enable haproxy
+sudo systemctl start haproxy
+
+
+sudo systemctl status haproxy
+
+#To Validate the haproxy is working
+haproxy -c -V -f /etc/haproxy/haproxy.cfg
+
+
+
+************
+Keeplived
+************
+
+####################
+PRE-REQ
+####################
+Make sure to change eth adaptor name in the keepalived.conf
+interface enp0s3
+
+
+Edit the Keepalived configuration file located at /etc/keepalived/keepalived.conf. (Update the IP of the load balancer. In my case 192.168.1.50 is the virtual IP which will rotate)
+
+###################
+Loadbalancer-1 (In my Configuration the LB1 is bind with IP 192.168.1.48)
+###################
+#vi /etc/keepalived/keepalived.conf
+
+vrrp_instance haproxy-virtual-ip {
+    state MASTER
+
+#   Make sure the interface is aligned with your server's network interface
+    interface enp0s3
+
+#   The virtual router ID must be unique to each VRRP instance that you define
+    virtual_router_id 51
+
+#   Make sure the priority is higher on the master server than on backup servers
+    priority 200
+
+#   advertisement interval, 1 second
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass 1066
+    }
+
+    unicast_src_ip 192.168.1.48
+
+    unicast_peer {
+        192.168.1.49
+    }
+
+    virtual_ipaddress {
+        192.168.1.50/24
+    }
+
+    track_script {
+        haproxy-check weight 20
+    }
+}
+
+
+###################
+Loadbalancer-2 (In my Configuration the LB2 is bind with IP 192.168.1.49)
+###################
+
+#vi /etc/keepalived/keepalived.conf
+
+vrrp_instance haproxy-virtual-ip {
+    state BACKUP
+
+#   Make sure the interface is aligned with your server's network interface
+    interface enp0s3
+
+#   The virtual router ID must be unique to each VRRP instance that you define
+    virtual_router_id 51
+
+#   Make sure the priority is higher on the master server than on backup servers
+    priority 150
+
+#   advertisement interval, 1 second
+    advert_int 1
+
+    authentication {
+        auth_type PASS
+        auth_pass 1066
+    }
+
+    unicast_src_ip 192.168.1.49
+
+    unicast_peer {
+        192.168.1.48
+    }
+
+    virtual_ipaddress {
+        192.168.1.50/24
+    }
+
+    track_script {
+        haproxy-check weight 20
+    }
+}
+
+
+
+systemctl restart keepalived
+systemctl status keepalived
+sudo systemctl enable keepalived
+sudo systemctl start keepalived
+
+
+ip addr show enp0s3
+
+
+try this from k8-master to ensure it can asseible.. the reply s (OK)
+curl -k https://192.168.1.50:6443/healthz
+
+to Validate the LB1 & LB2 accessible
+
+
+sudo systemctl status keepalived
+ip addr show | grep 192.168.<>
+
+curl http://192.168.<>
+
+
+
+
+############################################
+Setting Up the Docker and Containerd
+############################################
+
+P.N -> This is will be configured to all Control plane, Worker node and External Etcd's
+
+# Setting up containerd
+
+cd /home/centos/air-gap-k8-setup/containerd_setup
+
+tar xzvf containerd-2.0.1-linux-amd64.tar.gz
+
+cp bin/* /usr/local/bin
+
+cp bin/* /usr/bin
+
+cp -r containerd.service /etc/systemd/system/
+
+sudo systemctl restart containerd
+sudo systemctl enable containerd
+sudo systemctl enable containerd.service
+sudo systemctl status containerd
+
+
+# Setting up Docker
+
+cd /home/centos/air-gap-k8-setup/docker_setup
+
+tar xzvf docker-27.4.1.tgz
+
+cp docker/docker* /usr/local/bin
+cp docker/runc* /usr/local/bin
+cp docker/docker* /usr/bin
+cp docker/runc* /usr/bin
+
+SERVICE_PATH="/etc/systemd/system/docker.service"
+
+# Create or overwrite the docker.service file
+cat <<EOF | sudo tee $SERVICE_PATH > /dev/null
+[Unit]
+Description=Docker Application Container Engine
+Documentation=https://docs.docker.com
+After=network.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/dockerd
+ExecReload=/bin/kill -s HUP \$MAINPID
+LimitNOFILE=1048576
+LimitNPROC=infinity
+LimitCORE=infinity
+TimeoutStartSec=0
+Restart=always
+RestartSec=2
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# Reload systemd to apply the changes
+sudo systemctl daemon-reload
+systemctl enable docker.service
+
+# Enable and start the Docker service
+sudo systemctl enable --now docker
+
+# Print the status of the Docker service
+sudo systemctl status docker
+
+
+############################################
+Setting Up the Kubelet, kubectl and Kubeadm
+############################################
+
+P.N -> This is will be configured to all Control plane, Worker node and External Etcd's
+
+cd /home/centos/air-gap-k8-setup/kubernetes_rpms
+
+sudo yum localinstall *.rpm --disablerepo="*"
+
+kubectl version
+kubeadm version
+kubelet --version
+
+
+# resolvConf: /run/systemd/resolve/resolv.conf remove this andd below thing
+
+vi /var/lib/kubelet/config.yaml
+resolvConf: /etc/resolv.conf
+
+
+############################################
+Loading Images to the Control Plane and Worker nodes
+############################################
+
+# loading the images to k8s.io namespace
+
+cd /home/centos/air-gap-k8-setup/kubernetes_images
+
+for img in *.tar; do     ctr -n k8s.io images import "$img"; done
+
+ctr -n k8s.io images list
+
+############################################
+Loading Images to the Control Plane only
+############################################
+
+# Please Note: This is will only be applied once the control plane iniatilized
+
+cd /home/centos/air-gap-k8-setup/flannel/images
+for img in *.tar; do     ctr -n k8s.io images import "$img"; done
+cd /home/centos/air-gap-k8-setup/flannel
+kubectl apply -f kube-flannel.yml
+
+############################################
+Loading Images to the External etcd nodes only
+############################################
+
+# Please Note: This is will only be applied to all the etcd's nodes
+cd /home/centos/air-gap-k8-setup/kubernetes_images
+
+ctr -n k8s.io images import etcd-3.5.16-0.tar
+ctr -n kube-system images import etcd-3.5.16-0.tar
+
+ctr -n k8s.io images list
+ctr -n kube-system images list
+
+############################################
+Setting Up External-Etcd's
+############################################
+
+You need to make sure the etcd-tar is present on the external etcd's nodes
+
+sudo firewall-cmd --add-port=2379/tcp --permanent
+sudo firewall-cmd --add-port=2380/tcp --permanent
+sudo setenforce 0
+
+
+{
+ETCD_VER=v3.5.16
+GITHUB_URL=https://github.com/etcd-io/etcd/releases/download
+DOWNLOAD_URL=${GITHUB_URL}
+wget ${DOWNLOAD_URL}/${ETCD_VER}/etcd-${ETCD_VER}-linux-amd64.tar.gz
+tar xzvf etcd-${ETCD_VER}-linux-amd64.tar.gz
+cp etcd-v3.5.16-linux-amd64/etcd* /usr/local/bin/
+cp etcd-v3.5.16-linux-amd64/etcd* /usr/bin/
+}
+
+/usr/local/bin/etcd --version
+/usr/local/bin/etcdctl version
+/usr/local/bin/etcdutl version
+
+cat << EOF > /etc/systemd/system/kubelet.service.d/kubelet.conf
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: false  # Recommended to enable webhook for authentication
+authorization:
+  mode: AlwaysAllow  # Recommended to enable webhook authorization
+cgroupDriver: systemd  # Matches containerd's cgroup driver
+address: 127.0.0.1  # Listens on all interfaces
+containerRuntimeEndpoint: unix:///run/containerd/containerd.sock
+staticPodPath: /etc/kubernetes/manifests
+EOF
+
+
+
+cat << EOF > /etc/systemd/system/kubelet.service.d/20-etcd-service-manager.conf
+[Service]
+Environment="KUBELET_CONFIG_FILE=/etc/systemd/system/kubelet.service.d/kubelet.conf"
+ExecStart=
+ExecStart=/usr/bin/kubelet --config=${KUBELET_CONFIG_FILE}
+Restart=always
+EOF
+
+
+systemctl daemon-reload
+systemctl restart kubelet
+systemctl status kubelet
+
+
+# Now creating the kubeadmcfg.yaml for all 3 etcd's. (You can do on any one etcd node and then scp to other etcd's nodes)
+
+# Update HOST0, HOST1 and HOST2 with the IPs of your hosts
+export HOST0=192.168.1.31
+export HOST1=192.168.1.32
+export HOST2=192.168.1.33
+
+# Update NAME0, NAME1 and NAME2 with the hostnames of your hosts
+export NAME0="etcd1"
+export NAME1="etcd2"
+export NAME2="etcd3"
+
+# Create temp directories to store files that will end up on other hosts
+mkdir -p /tmp/${HOST0}/ /tmp/${HOST1}/ /tmp/${HOST2}/
+
+HOSTS=(${HOST0} ${HOST1} ${HOST2})
+NAMES=(${NAME0} ${NAME1} ${NAME2})
+
+for i in "${!HOSTS[@]}"; do
+HOST=${HOSTS[$i]}
+NAME=${NAMES[$i]}
+cat << EOF > /tmp/${HOST}/kubeadmcfg.yaml
+---
+apiVersion: "kubeadm.k8s.io/v1beta4"
+kind: InitConfiguration
+nodeRegistration:
+    name: ${NAME}
+localAPIEndpoint:
+    advertiseAddress: ${HOST}
+---
+apiVersion: "kubeadm.k8s.io/v1beta4"
+kind: ClusterConfiguration
+etcd:
+    local:
+        serverCertSANs:
+        - "${HOST}"
+        peerCertSANs:
+        - "${HOST}"
+        extraArgs:
+        - name: initial-cluster
+          value: ${NAMES[0]}=https://${HOSTS[0]}:2380,${NAMES[1]}=https://${HOSTS[1]}:2380,${NAMES[2]}=https://${HOSTS[2]}:2380
+        - name: initial-cluster-state
+          value: new
+        - name: name
+          value: ${NAME}
+        - name: listen-peer-urls
+          value: https://${HOST}:2380
+        - name: listen-client-urls
+          value: https://${HOST}:2379
+        - name: advertise-client-urls
+          value: https://${HOST}:2379
+        - name: initial-advertise-peer-urls
+          value: https://${HOST}:2380
+EOF
+done
+
+
+#Generate the certificate authority. (on the selected one node)
+kubeadm init phase certs etcd-ca
+
+#This creates two files:
+#/etc/kubernetes/pki/etcd/ca.crt
+#/etc/kubernetes/pki/etcd/ca.key
+
+
+
+#Create certificates for each member (on the selected one node)
+kubeadm init phase certs etcd-server --config=/tmp/${HOST2}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-peer --config=/tmp/${HOST2}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-healthcheck-client --config=/tmp/${HOST2}/kubeadmcfg.yaml
+kubeadm init phase certs apiserver-etcd-client --config=/tmp/${HOST2}/kubeadmcfg.yaml
+cp -R /etc/kubernetes/pki /tmp/${HOST2}/
+# cleanup non-reusable certificates
+find /etc/kubernetes/pki -not -name ca.crt -not -name ca.key -type f -delete
+
+kubeadm init phase certs etcd-server --config=/tmp/${HOST1}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-peer --config=/tmp/${HOST1}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-healthcheck-client --config=/tmp/${HOST1}/kubeadmcfg.yaml
+kubeadm init phase certs apiserver-etcd-client --config=/tmp/${HOST1}/kubeadmcfg.yaml
+cp -R /etc/kubernetes/pki /tmp/${HOST1}/
+find /etc/kubernetes/pki -not -name ca.crt -not -name ca.key -type f -delete
+
+kubeadm init phase certs etcd-server --config=/tmp/${HOST0}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-peer --config=/tmp/${HOST0}/kubeadmcfg.yaml
+kubeadm init phase certs etcd-healthcheck-client --config=/tmp/${HOST0}/kubeadmcfg.yaml
+kubeadm init phase certs apiserver-etcd-client --config=/tmp/${HOST0}/kubeadmcfg.yaml
+# No need to move the certs because they are for HOST0
+
+# clean up certs that should not be copied off this host
+find /tmp/${HOST2} -name ca.key -type f -delete
+find /tmp/${HOST1} -name ca.key -type f -delete
+
+
+#now scp the certificate on etcd2 and etcd3 nodes and moved into the respective location
+
+USER=ubuntu
+HOST=${HOST1}
+scp -r /tmp/${HOST}/* ${USER}@${HOST}:
+ssh ${USER}@${HOST}
+USER@HOST $ sudo -Es
+root@HOST $ chown -R root:root pki
+root@HOST $ cp pki /etc/kubernetes/
+
+#Create the static pod manifests on each etcds node
+kubeadm init phase etcd local --config=/tmp/${HOST0}/kubeadmcfg.yaml
+kubeadm init phase etcd local --config=$HOME/kubeadmcfg.yaml
+kubeadm init phase etcd local --config=$HOME/kubeadmcfg.yaml
+
+The above 3 commands will be 1 for each etcd nodes. not run all 3 commands on every nodes.
+
+#Check the Static is up and running
+
+crictl ps 
+
+#Check the cluster health
+
+ETCDCTL_API=3 etcdctl \
+--cert /etc/kubernetes/pki/etcd/peer.crt \
+--key /etc/kubernetes/pki/etcd/peer.key \
+--cacert /etc/kubernetes/pki/etcd/ca.crt \
+--endpoints https://${HOST0}:2379 endpoint health
+
+ETCDCTL_API=3 etcdctl --cert /etc/kubernetes/pki/etcd/peer.crt --key /etc/kubernetes/pki/etcd/peer.key --cacert /etc/kubernetes/pki/etcd/ca.crt --endpoints https://192.168.1.31:2379 endpoint health
+
+
+######################
+Setting Up Control Plane + external ETCD + HA
+######################
+
+# copy the ca.crt, apiserver-etcd-client.crt and apiserver-etcd-client.key to the control plane 1 only.
+
+export CONTROL_PLANE="ubuntu@10.0.0.7"
+scp /etc/kubernetes/pki/etcd/ca.crt "${CONTROL_PLANE}":
+scp /etc/kubernetes/pki/apiserver-etcd-client.crt "${CONTROL_PLANE}":
+scp /etc/kubernetes/pki/apiserver-etcd-client.key "${CONTROL_PLANE}":
+
+
+# Create the kubeadm-config.yaml on the $HOME
+
+apiVersion: kubeadm.k8s.io/v1beta3
+kind: ClusterConfiguration
+controlPlaneEndpoint: "192.168.1.50:6443"  
+networking:
+  podSubnet: "10.244.0.0/16"  
+etcd:
+  external:
+    endpoints:
+      - https://192.168.1.31:2379  
+      - https://192.168.1.32:2379  
+      - https://192.168.1.33:2379  
+    caFile: /etc/kubernetes/pki/etcd/ca.crt  # Shared CA certificate for etcd
+    certFile: /etc/kubernetes/pki/etcd/apiserver-etcd-client.crt  # Client certificate
+    keyFile: /etc/kubernetes/pki/etcd/apiserver-etcd-client.key  # Client key
+apiServer:
+  certSANs:
+    - "192.168.1.50"         
+    - "kubernetes"
+    - "kubernetes.default"
+    - "kubernetes.default.svc"
+    - "kubernetes.default.svc.cluster.local"
+    - "k8-master1"
+    - "k8-master2"           
+    - "k8-master3"           
+    - 192.168.1.16
+    - 192.168.1.15
+    - 192.168.1.14
+kubernetesVersion: v1.32.0
+
+
+# Now its time to initialize the 1st Control plane
+
+kubeadm init --config kubeadm-config.yaml --ignore-preflight-errors=all --v=5
+
+#Copy the join commands for control plane and worker node commands to join
+
+#Verify Certificates
+#Once the process is complete, you can check if the certificate is valid by running:
+openssl x509 -in /etc/kubernetes/pki/apiserver.crt -noout -text | grep -A 1 "X509v3 Subject Alternative Name" 
+
+
+Please Note:
+To join remaining control plan you need to scp all pki keys from control plane 1 (master1) to the masternode N. and then execute the Join command. 
+The above is only for the control plane only. not for worker node.
+
+
+
+
+
+
+
